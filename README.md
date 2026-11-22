@@ -1,98 +1,118 @@
-# Drive Sync Lock for REAPER
+# Drive Sync for REAPER
 
-A ReaScript that adds check-out/check-in locking to REAPER projects that live in a
-synced folder (Google Drive, rclone, Dropbox, Syncthing...). Only one machine edits a
-project at a time. Everyone else gets warnings and reload prompts instead of silently
-overwriting each other.
+Work on the same REAPER projects from two or more computers through a shared Google Drive
+folder (or Dropbox, OneDrive, Syncthing, rclone...) **without overwriting each other's
+work.**
 
-## What it does
+Google Drive copies files but has no idea who is working on what. If two computers
+save the same `.rpp`, one of them wins and the other ends up as a stray conflict copy.
+Drive Sync adds what's missing:
 
-While the script is running, for every **saved** project open in any tab:
-
-| Situation | What happens |
-|---|---|
-| You open a project nobody has locked | A `MySong.rpp.lock` file is written next to it, naming your machine |
-| You open a project another machine has locked | You choose: **view-only**, **take over the lock**, or **close** |
-| The lock is old (no heartbeat for 15 min) | It's treated as abandoned (crash or machine offline), and you're offered the lock |
-| You're editing | The lock is refreshed every 60 s |
-| You close the project / stop the script / quit REAPER | Your lock is deleted |
-| The `.rpp` changes on disk from the other machine | You're asked whether to reload (with a warning if you have unsaved changes) |
-| The other machine releases the lock while you're viewing | You're offered the lock |
-| Someone takes over your lock | You're warned not to save, and told to use *Save as* if you want to keep your changes |
-| You save while not holding the lock | You're warned that a collision is likely |
-| A sync conflict copy appears (`MySong (1).rpp`, `...conflict...`) | You're warned so you can merge it by hand |
+- **Project locking.** Opening a project "checks it out" to your computer. Everyone else is
+  told who has it, and can open it view-only, take over, or close it.
+- **Live updates.** When the person with the lock saves, everyone viewing the project is
+  offered a reload.
+- **Hand-over.** When they close the project, the next person is offered the lock.
+- **Crash-safe.** Locks are refreshed every minute. A lock left behind by a crash or a
+  laptop that went offline expires after 15 minutes.
+- **Track-by-track merging.** Conflict copies (`Song (1).rpp`) and "Save as" copies can be
+  merged back automatically:
+  - Tracks changed on only one side are combined.
+  - Tracks where different items were changed are merged item by item.
+  - Tracks where the same thing was changed on both sides keep your version, and the other
+    version is added as a muted copy at the end, so nothing is lost.
+- **Local history.** Every version of a project the script sees is snapshotted outside the
+  synced folder (last 30 per project), as backups and as merge ancestors.
 
 ## Install
 
-1. Copy `DriveSyncLock.lua` into REAPER's `Scripts` folder (*Options > Show REAPER resource path*).
-2. *Actions > Show action list > New action... > Load ReaScript...* and pick the file.
-3. (Optional) Add it to a toolbar. The button lights up while the script is running.
-4. (Optional) Start it automatically: install SWS, then *Extensions > Startup actions*,
-   or add the action to `__startup.lua`.
+**→ See [docs/INSTALL.md](docs/INSTALL.md)** for detailed step-by-step instructions for
+Windows, macOS and Linux. They cover Google Drive setup, the REAPER scripts, auto-start,
+and the REAPER settings that matter.
 
-Run the action again to stop the script. Stopping releases all of your locks.
+Short version:
 
-Settings (poll rate, heartbeat, stale timeout) are at the top of the script.
+1. Sync a shared folder on every computer (Google Drive for Desktop in **Mirror files** mode,
+   or `rclone bisync` on Linux).
+2. Copy this whole folder into REAPER's `Scripts` folder
+   (*Options → Show REAPER resource path*). The `lib/` folder must stay next to the scripts.
+3. *Actions → Show action list → New action → Load ReaScript*, and load both `.lua` files.
+4. Run `DriveSyncLock.lua`, ideally from a toolbar button and automatically at startup.
 
-## Recommended REAPER settings (on every machine)
+## What's in here
 
-- **Peaks stored locally:** *Preferences > Media > Peaks/waveforms*. Store peak caches in
-  an alternate path outside the synced folder.
-- **Backups out of the shared folder:** *Preferences > Project > Backup*. Point timestamped
-  backups at a local folder, or rely on the filter list below.
-- **Media inside the project folder:** *Preferences > Audio > Recording*. Record into a
-  `Media/` subfolder relative to the project. Never reference files by absolute paths
-  outside the shared folder.
-- Use the same plugins and plugin versions on every machine.
+| Path | What it is |
+|---|---|
+| `DriveSyncLock.lua` | The background script (toggle action): locks, heartbeats, reload prompts, conflict-copy merging, history |
+| `DriveSync - Merge another version.lua` | Action: pick another copy of the current project and merge it in |
+| `lib/rpp.lua` | `.rpp` parser/serializer and 3-way merge engine (pure Lua, no REAPER needed) |
+| `lib/drivesync.lua` | Shared REAPER-side helpers: lock files, history, merge-into-project |
+| `tools/rppmerge.lua` | Command-line merge: `lua tools/rppmerge.lua BASE OURS THEIRS OUT` |
+| `sync/rclone-filters.txt` | Files to keep out of the sync (peaks, backups, OS junk) |
+| `tests/` | Merge-engine tests and two-machine simulations against a fake REAPER API |
+| `docs/INSTALL.md` | Full install guide |
 
-## Syncing the folder
+## How it works
 
-### Windows / macOS: Google Drive for Desktop
-Put your projects in a Drive folder set to **"Mirror files"** (or mark the folder
-"Available offline" in streaming mode). REAPER needs real local files, not on-demand
-placeholders.
+**Lock file.** Next to `Song.rpp`, the script writes `Song.rpp.lock`:
 
-### Linux: rclone bisync
-There's no official Drive client for Linux. Use `rclone`:
-
-```bash
-rclone config                        # create a remote called "gdrive"
-# first run only:
-rclone bisync ~/ReaperProjects gdrive:ReaperProjects \
-  --filters-file ~/Dev/reaper-drive-sync/rclone-filters.txt --resync
-# after that, run on a short loop (every 30-60 s) while you work:
-while true; do
-  rclone bisync ~/ReaperProjects gdrive:ReaperProjects \
-    --filters-file ~/Dev/reaper-drive-sync/rclone-filters.txt
-  sleep 30
-done
+```
+machine=studio-pc-3fa29c01
+user=colin
+host=studio-pc
+acquired=1795000000
+heartbeat=1795000600
 ```
 
-You could also run that loop as a systemd user timer. Keep the sync interval well
-below the 15-minute stale timeout.
+It rewrites the file every 60 s, and deletes it when you close the project, stop the
+script or quit REAPER. Other computers check this file to decide what to tell their user.
 
-## Workflow
+**Change detection.** Every 2 s, the script compares each open project's file on disk with
+what it last saw. A change while you hold the lock is your own save. A change while you
+don't hold it came from another computer, so you're offered a reload.
 
-1. Wait for the sync client to finish (green check / rclone idle) **before** opening a project.
-2. Open the project. If it's free, you hold the lock.
-3. Work and save normally.
-4. Close the project when you're done, so the lock is released and synced.
-5. On the other machine, wait for the sync, then open the project.
+**Merging.** `.rpp` files are text: a tree of `<CHUNK ... >` blocks where every track
+and item carries a GUID. The merge engine does a 3-way merge keyed on those GUIDs. The
+common ancestor is picked automatically from local history: it's the snapshot that shares
+the most unchanged tracks with both versions.
 
-## Limitations (read these)
+## Limitations
 
-- **Sync delay is the weak spot.** The lock is just a file. If two machines open the
-  same project within the sync interval, both can think they hold the lock. When you take
-  a lock, the script doesn't wait for confirmation from the other machine. Opening the
-  project only after sync has settled avoids this.
-- **View-only isn't enforced.** REAPER has no read-only mode the script can switch on.
-  It warns you if you save without the lock, but it can't stop the save.
-- **Clocks should be roughly in sync** (normal NTP is fine). Stale detection compares
-  timestamps written by different machines.
-- **Own-save detection is simple.** While you hold the lock, any change to the `.rpp` is
-  assumed to be your own save.
-- The whole `.rpp` is re-read every 2 s for each open project. That's fine for typical
-  projects (a few MB). Raise `POLL_INTERVAL` for huge ones.
-- There's no merging. If the same project is edited on two machines anyway, you merge
-  the conflict copy by hand. Track-level merging (tracks have GUIDs in the `.rpp`) is the
-  logical next feature.
+- **Sync delay.** The lock is just a file, so it's only as fast as your sync. If two
+  computers open a project within the same sync window, both can think they hold the lock.
+  Wait for the sync to settle before opening.
+- **View-only isn't enforced.** REAPER has no read-only mode a script can switch on. You
+  get warned if you save without the lock, but the save isn't blocked.
+- **Clocks.** Stale-lock detection compares timestamps from different computers, so keep
+  their clocks roughly right (automatic time sync is fine).
+- **Merge scope.** Merging works at the level of tracks, items and project settings. Two
+  edits to the *same* track's settings (volume, FX chain, ...) or the *same* item are not
+  combined. The other version is kept as a muted copy for you to reconcile. Track order
+  and folder structure come from your version. Tracks added on the other side are slotted
+  in next to their original neighbours.
+- Each open project's `.rpp` is re-read every 2 s. That's fine for normal projects; raise
+  `POLL_INTERVAL` for huge ones.
+
+## Development
+
+Tests need Lua 5.3 or 5.4 (the same Lua REAPER uses):
+
+```bash
+lua tests/test_rpp.lua    # merge engine
+lua tests/test_lock.lua   # two simulated machines sharing a folder (uses /tmp)
+```
+
+`tests/mock_reaper.lua` implements just enough of the REAPER API to run the scripts
+unmodified, with a separate clock, ExtState and resource folder per simulated machine.
+
+## Roadmap
+
+- [ ] ReaPack repository, for one-click install and updates
+- [ ] Status window: who has which project, when it was last synced
+- [ ] Field-level merging inside a track (volume vs. FX vs. items)
+- [ ] Optional read-only guard: close-and-reopen instead of allowing edits without the lock
+- [ ] Warn when referenced media files haven't finished syncing yet
+
+## License
+
+MIT, see [LICENSE](LICENSE).
