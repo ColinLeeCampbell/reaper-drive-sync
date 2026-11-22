@@ -1,0 +1,21 @@
+# Filter rules for `rclone bisync --filters-file rclone-filters.txt`
+# Keeps REAPER's per-machine and throwaway files out of the shared folder.
+
+# Peak (waveform) caches - each machine rebuilds its own
+- *.reapeaks
+- *.reapindex
+
+# Backups / autosaves / undo history
+- *.rpp-bak
+- *.RPP-bak
+- *.rpp-undo
+- *.RPP-undo
+- Backups/**
+
+# OS junk
+- .DS_Store
+- Thumbs.db
+- desktop.ini
+
+# Everything else (projects, media, and the .lock files) is synced
++ **
